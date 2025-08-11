@@ -1,0 +1,182 @@
+# Bibliotheken installieren
+# Langchain und Langchain-openai für LLM-Workflows, Tool-Integration 
+# und Prompt-Chaining
+# requests für HTTP-Anfragen (Wetter-API)
+# pandas für Tabellen-Output
+!pip install langchain langchain-openai requests pandas
+
+# Keys aus Colab-Secret-Store laden
+from google.colab import userdata
+import os
+
+# API-Keys aus userdata holen
+# OpenAI-Key
+os.environ["OPENAI_API_KEY"] = userdata.get("apikey_lp")
+# OpenWeatherMap-Key
+os.environ["OPENWEATHER_API_KEY"] = userdata.get("wetterkey_lp")
+
+
+# Imports
+
+# Langchain-Schnittstelle zu OpenAI-ChatModell
+from langchain_openai import ChatOpenAI
+
+#ChatPromptTemplate für Templates mit Variablen
+from langchain.prompts import ChatPromptTemplate
+
+# Für direkten API-Zugriff
+import requests
+
+# JSON Import für structued output
+import json
+
+# Pandas für Tabellenanzeige
+import pandas as pd
+
+# Arbeiten mit regulären Ausdrücken
+import re
+
+# Wetter-Tool (OpenWeatherMap)
+
+# Hier werden mithilfe einer API Wetterdaten für eine Stadt abgerufen.
+# Stellt ein Tool dar, dessen Output für das Prompt-Chaining genutzt wird
+def get_weather(city):
+    api_key = os.environ["OPENWEATHER_API_KEY"]
+    # API-Endpoint mit Parametern: Stadt, API-Key, metrische Einheiten, deutsche Sprache
+    url = f"http://api.openweathermap.org/data/2.5/weather?q={city}&appid={api_key}&units=metric&lang=de"
+    
+    # Anfrage an die Wetter-API
+    resp = requests.get(url)
+    data = resp.json()
+    
+    # Falls Statuscode nicht 200 → API-Fehler zurückgeben
+    if resp.status_code != 200:
+        return {"error": data.get("message", "Fehler beim Abrufen")}
+    
+    # Wichtigste Felder ins Dictionary übernehmen
+    return {
+        "stadt": data["name"],
+        "temperatur": data["main"]["temp"],
+        "wetterbeschreibung": data["weather"][0]["description"]
+    }
+
+# Prompt-Chaining
+
+# Mehrstufiger Ablauf:
+# 1) Tool-Aufruf: get_weather() → externe Daten holen
+# 2) LLM-Aufruf: ChatOpenAI mit Wetterdaten als Input → Empfehlung generieren
+# 3) Structured Output: JSON-Ergebnis parsen und zurückgeben
+def chain(city):
+
+    # Wetter abrufen
+    wetter = get_weather(city)
+
+    if "error" in wetter:
+        return wetter # Fehler durchreichen
+
+    # Empfehlung mit LLM
+    # ChatOpenAI ist LLM-Wrapper, gpt-4o-mini mit Temperatur 0 wird verwendet
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+
+    # Mit ChatPromptTemplate können Vorlage erstellen um Variablen gut einsetzen zu können
+    prompt = ChatPromptTemplate.from_template("""
+    Du bist ein Wetterassistent. Analysiere die folgenden Wetterdaten und gib eine Aktivitätsempfehlung.
+    Antworte im JSON-Format mit den Feldern: stadt, temperatur, wetterbeschreibung, empfehlung.
+    Wetterdaten: {wetter}
+    """)
+
+    # Erzeugung einer Chain, erst wird Prompt befüllt, dann automatisch an LLM geschickt
+    chain = prompt | llm
+
+    # Chain ausführen, Ergebnis abfragen
+    result = chain.invoke({"wetter": wetter})
+
+    # Rohtextantwort bereinigen
+    text = result.content.strip()
+    
+    # Codeblöcke entfernen (```json ... ```)
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9]*\n?", "", text)  # entfernt ```json
+        text = re.sub(r"```$", "", text).strip()
+
+    # Text als JSON laden
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+      # Rohtext zurückgeben wenn Parsing fehlschlägt
+        return {"rohtext": text}
+
+# Testlauf und Tabellen-Output
+
+# Stadt festlegen
+stadt = "Heidenheim"
+
+# Prompt-Chaining-Funktion ausführen
+ergebnis = chain(stadt)
+
+# JSON schön ausgeben
+print("JSON-Output:")
+print(json.dumps(ergebnis, indent=2, ensure_ascii=False))
+
+# Tabelle anzeigen, wenn möglich
+if isinstance(ergebnis, dict):
+    df = pd.DataFrame([ergebnis])
+    print("\n Tabellen-Output:")
+    display(df)
+else:
+    print("\n Ergebnis konnte nicht in eine Tabelle umgewandelt werden.")
+    # Codeblöcke entfernen (```json ... ```)
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-zA-Z0-9]*\n?", "", text)  # entfernt ```json
+        text = re.sub(r"```$", "", text).strip()
+
+    # Text als JSON laden
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+      # Rohtext zurückgeben wenn Parsing fehlschlägt
+        return {"rohtext": text}
+
+# Testlauf und Tabellen-Output
+
+# Stadt festlegen
+stadt = "Heidenheim"
+
+# Prompt-Chaining-Funktion ausführen
+ergebnis = chain(stadt)
+
+# JSON schön ausgeben
+print("📄 JSON-Output:")
+print(json.dumps(ergebnis, indent=2, ensure_ascii=False))
+
+# Tabelle anzeigen, wenn möglich
+if isinstance(ergebnis, dict):
+    df = pd.DataFrame([ergebnis])
+    print("\n📊 Tabellen-Output:")
+    display(df)
+else:
+    print("\n⚠️ Ergebnis konnte nicht in eine Tabelle umgewandelt werden.")
+        return json.loads(text)
+    except json.JSONDecodeError:
+      # Rohtext zurückgeben wenn Parsing fehlschlägt
+        return {"rohtext": text}
+
+# 6. Testlauf + Tabellen-Output
+
+# Stadt festlegen
+stadt = "Heidenheim"
+
+# Prompt-Chaining-Funktion ausführen
+ergebnis = chain(stadt)
+
+# JSON schön ausgeben
+print("📄 JSON-Output:")
+print(json.dumps(ergebnis, indent=2, ensure_ascii=False))
+
+# Tabelle anzeigen, wenn möglich
+if isinstance(ergebnis, dict):
+    df = pd.DataFrame([ergebnis])
+    print("\n📊 Tabellen-Output:")
+    display(df)
+else:
+    print("\n⚠️ Ergebnis konnte nicht in eine Tabelle umgewandelt werden.")

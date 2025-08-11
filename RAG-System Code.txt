@@ -1,0 +1,216 @@
+# Setup (Colab)
+
+# Importieren von Colab-Hilfsfunktionen, um sicher gespeicherte Userdaten (z. B.
+# API-Keys) abzurufen, ohne sie im Code zu hinterlegen.
+from google.colab import userdata
+
+#Auslesen des gespeicherten OpenAI-API-Schlüssels aus Colab Secrets.
+OPENAI_API_KEY = userdata.get('apikey_lp')
+
+# Pakete
+
+# LangChain-Kerne, Community-Integrationen, das OpenAI-Plugin, PDF-Parsing sowie
+# FAISS für den lokalen Vektorindex installieren.
+!pip install -q langchain langchain-community langchain-openai pypdf faiss-cpu
+
+# Imports
+
+# LangChain-Wrapper: ChatOpenAI kapselt Chat-Completions der OpenAI-API,
+# OpenAIEmbeddings kapselt Embedding-Calls.
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
+# Lädt PDFs über pypdf und abstrahiert das Seiten-Parsing in
+# LangChain-Dokument-Objekte.
+from langchain_community.document_loaders import PyPDFLoader
+
+# Zerlegt lange Texte rekursiv in überlappende Chunks, um semantisches Retrieval
+# stabil zu machen.
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+# Stellt eine LangChain-Hülle um den FAISS-Vektorindex bereit, wodurch Einfügen
+# und Ähnlichkeitssuche vereinheitlicht werden.
+from langchain_community.vectorstores import FAISS
+
+# Parst die LLM-Ausgabe und extrahiert den reinen Antwort-String aus der
+# generischen Nachrichtenstruktur.
+from langchain_core.output_parsers import StrOutputParser
+
+# Erzeugt Parameterisierbare Prompt-Schablonen, die Variablen wie {context} und
+# {question} zur Laufzeit einsetzen.
+from langchain.prompts import ChatPromptTemplate
+
+# Bausteine der LangChain-Execution-Engine: Parallel führt mehrere Schritte
+# gleichzeitig aus, Passthrough reicht Eingaben unverändert weiter.
+from langchain_core.runnables import RunnableParallel, RunnablePassthrough
+
+# PDF laden
+
+# Definieren der Quelle der PDF als Rohdatei-URL auf GitHub, damit der Loader
+# direkt herunterladen kann.
+PDF_PATH = "https://raw.githubusercontent.com/Earth-Eagle/Assignment/main/WissensquelleRAG.pdf"
+
+# Dokument-Loader erstellen, der intern pypdf nutzt und jede Seite als eigenes
+# Document-Objekt abstrahiert.
+loader = PyPDFLoader(PDF_PATH)
+
+# PDF synchron laden, liefert eine Liste (ein Element pro Seite).
+docs = loader.load()
+
+# Seitenzahl auf 10 beschränken (sicherstellen dass max. 10 Seiten genutzt
+# werden, wie in der Aufgabenstellung gewünscht).
+docs = docs[:10]
+
+# Chunking
+
+# Rekursiven Text-Splitter konfigurieren, der nach Grenzzeichen teilt.
+text_splitter = RecursiveCharacterTextSplitter(
+
+   # Maximale Zeichenlänge eines Chunks festlegen.
+    chunk_size=800,
+
+   # Überlappung zwischen Chunks definieren um semantische Kontinuität zu
+   # sichern.
+    chunk_overlap=120
+)
+
+# Splitter auf die Dokumentenliste anwenden --> Chunks mit vererbten Metadaten
+# werden produziert.
+chunks = text_splitter.split_documents(docs)
+
+# Embeddings & Vectorstore (semantisches Retrieval)
+
+# Embedding-Client erstellen, der HTTP-Aufrufe zur OpenAI-Embeddings-API
+# kapselt und Texte in numerische Vektoren umwandelt.
+embeddings = OpenAIEmbeddings(
+
+    # Embedding Modell auswählen.
+    model="text-embedding-3-small",
+
+    # API-Schlüssel übergeben damit Wrapper Requests an OPENAI-API senden kann.
+    openai_api_key=OPENAI_API_KEY
+)
+
+# Embedding für alle Chunks berechnen und FAISS-Index für Approximate Nearest
+# Neighbor Suche bauen.
+vectorstore = FAISS.from_documents(chunks, embeddings)
+
+# Vectorstore in Retriever-Interface umwandeln, das intern k ähnlichste Chunks
+# liefert.
+retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
+
+# Prompt + LLM + Parser (RAG-Chain)
+
+# Chat-Promptvorlage erstellen.
+prompt = ChatPromptTemplate.from_template(
+    """Beantworte die Frage NUR auf Basis des bereitgestellten Kontexts.
+Wenn die Antwort nicht eindeutig im Kontext steht, gib EXAKT: "Ich weiß es nicht." zurück.
+Antworte kurz und präzise auf Deutsch.
+
+# Kontext
+{context}
+
+# Frage
+{question}"""
+)
+
+# LLM-Client erzeugen
+model = ChatOpenAI(
+
+    # API-Schlüssel für authentifizierte Requests setzen,
+    # die über das Wrapper-Objekt abgesetzt werden.
+    openai_api_key=OPENAI_API_KEY,
+
+    # Chatmodell auswählen.
+    model="gpt-4o-mini",
+
+    # Temperature festlegen, um Zufälligkeit der Ausgabe zu regeln.
+    temperature=0.1
+)
+
+# Parser festlegen, der die LLM-Antwort in einen String extrahiert.
+parser = StrOutputParser()
+
+# Frage durchreichen und Kontext aus Retriever ziehen
+
+# Parallelen Ausführungsknoten erstellen, der mehrere Runnables gleichzeitig
+# berechnet.
+setup = RunnableParallel(
+
+    # context mit den vom Retriever zur Frage gefundenen passenden
+    # Textstellen befüllen.
+    context=retriever,
+
+    # Eingabe unverändert weiterreichen.
+    question=RunnablePassthrough()
+)
+
+# Gesamtkette: (Retriever) -> Prompt -> LLM -> Parser
+
+# Runnables mit Pipe-Operator verknüpfen, sodass Ausgabe eines Schrittes
+# zum Eingang des nächsten wird.
+rag_chain = setup | prompt | model | parser
+
+
+# Beispielabfragen
+
+# Antwort auf die Frage ausgeben.
+print(
+
+    # Kette synchron ausführen: Retrieval erzeugt Kontext, Prompt wird
+    # gerendert, Modell antwortet, Parser gibt String zurück.
+    rag_chain.invoke("Worum geht es in dem Dokument?")
+)
+
+print(
+    rag_chain.invoke("Welche Rivalen hatte Alonso?")
+)
+
+{question}"""
+)
+
+# LLM-Client erzeugen
+model = ChatOpenAI(
+    
+    # API-Schlüssel für authentifizierte Requests setzen, die über das Wrapper-Objekt abgesetzt werden.
+    openai_api_key=OPENAI_API_KEY,
+
+    # Chatmodell auswählen.
+    model="gpt-4o-mini",
+
+    # Temperature festlegen, um Zufälligkeit der Ausgabe zu regeln.
+    temperature=0.1
+)
+
+# Parser festlegen, der die LLM-Antwort in einen String extrahiert.
+parser = StrOutputParser()
+
+# Frage durchreichen und Kontext aus Retriever ziehen
+
+# Parallelen Ausführungsknoten erstellen, der mehrere Runnables gleichzeitig berechnet.
+setup = RunnableParallel(
+    
+    # context mit den vom Retriever zur Frage gefundenen passenden Textstellen befüllen.                    
+    context=retriever,
+
+    # Eingabe unverändert weiterreichen.
+    question=RunnablePassthrough()
+)
+
+# Gesamtkette: (Retriever) -> Prompt -> LLM -> Parser
+
+# Runnables mit Pipe-Operator verknüpfen, sodass Ausgabe eines Schrittes zum Eingang des nächsten wird.
+rag_chain = setup | prompt | model | parser
+
+
+# Beispielabfragen
+
+# Antwort auf die Frage ausgeben.
+print(
+    
+    # Kette synchron ausführen: Retrieval erzeugt Kontext, Prompt wird gerendert, Modell antwortet, Parser gibt String zurück.
+    rag_chain.invoke("Worum geht es in dem Dokument?")
+)
+
+print(
+    rag_chain.invoke("Welche Rivalen hatte Alonso?")
+)
